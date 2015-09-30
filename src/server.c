@@ -126,6 +126,145 @@ ev_timer stat_update_watcher;
 
 static struct cork_dllist connections;
 
+
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+// 日志文件日期
+char log_file_time[30];
+// 日志文件
+FILE *log_fp = NULL;
+char server_config_name[256];
+
+
+static void logging_init(char *server_config_path)
+{
+
+	strncpy(server_config_name,basename(server_config_path) , 256);
+
+}
+
+// 记录请求日志
+// 客户IP、客户端口、服务器IP、服务器端口、目标域名、目标ip、目标端口
+static void logging_log_tcp(char *client_ip, int client_port, char *server_ip, int server_port, char *local_ip, int local_port, char *remote_host, char *remote_ip, int remote_port)
+{
+	pthread_mutex_lock(&mutex);
+
+
+	// 取得当前日期(北京时区)
+	time_t now = time(NULL) + 8 * 60 * 60;
+	struct tm *now_tm;
+	now_tm = gmtime(&now);
+	char new_log_file_time[30];
+	char log_timestr[30];
+
+	strftime(new_log_file_time, 30, "%Y-%m-%d", now_tm);
+	strftime(log_timestr, 30, "%Y-%m-%d %H:%M:%S", now_tm);
+
+	if (log_fp != NULL && strcmp(log_file_time, new_log_file_time))
+	{// 日志时间不匹配，关闭日志文件
+		fclose(log_fp);
+		log_fp = NULL;
+	}
+
+	if (log_fp == NULL)
+	{// 没打开日志文件
+		char log_path[255];
+		snprintf(log_path, 255, "/usr/local/ss-libev/tcp_log/%s-%s.log", new_log_file_time, server_config_name);
+
+		log_fp=	fopen(log_path, "ab");
+		memcpy(log_file_time, new_log_file_time, 30);
+	}
+
+	fprintf(log_fp, "%s,%s,%d,%s,%d,%s,%d,%s,%s,%d,%s\r\n", log_timestr, client_ip, client_port, server_ip, server_port, local_ip, local_port, remote_host, remote_ip, remote_port, server_config_name);
+	fflush(log_fp);
+
+
+	pthread_mutex_unlock(&mutex);
+}
+
+
+
+static int get_host_port(int fd, char *host, int host_size, int *port, int type)
+{
+	struct sockaddr_storage addr;
+	socklen_t len = sizeof addr;
+	memset(&addr, 0, len);
+	int err;
+
+	if (type == 1)
+	{
+		err = getpeername(fd, (struct sockaddr *)&addr, &len);
+	}
+	else if (type == 2)
+	{
+		err = getsockname(fd, (struct sockaddr *)&addr, &len);
+	}
+	else
+	{
+		return -3;
+	}
+
+	if (err == 0)
+	{
+
+		if (addr.ss_family == AF_INET) {
+			if (host_size < INET_ADDRSTRLEN)
+			{
+				return -2;
+			}
+			struct sockaddr_in *s = (struct sockaddr_in *)&addr;
+			dns_ntop(AF_INET, &s->sin_addr, host, host_size);
+
+			*port = ntohs(s->sin_port);
+		}
+		else if (addr.ss_family == AF_INET6) {
+			if (host_size < INET6_ADDRSTRLEN)
+			{
+				return -2;
+			}
+			struct sockaddr_in6 *s = (struct sockaddr_in6 *)&addr;
+			dns_ntop(AF_INET6, &s->sin6_addr, host, host_size);
+			*port = ntohs(s->sin6_port);
+		}
+	}
+	else
+	{
+		return -1;
+	}
+	return 0;
+}
+
+
+static void log_tcp(int server_fd, int remote_fd, char *remote_host)
+{
+	// 客户地址
+	char client_ip[INET6_ADDRSTRLEN] = { 0 };
+	int client_port = 0;
+
+	// 服务器ss地址
+	char server_ip[INET6_ADDRSTRLEN] = { 0 };
+	int server_port = 0;
+
+	// 目标网站地址
+	char remote_ip[INET6_ADDRSTRLEN] = { 0 };
+	int remote_port = 0;
+
+	// 连接目标网站的本地地址
+	char local_ip[INET6_ADDRSTRLEN] = { 0 };
+	int local_port = 0;
+
+	get_host_port(server_fd, client_ip, INET6_ADDRSTRLEN, &client_port, 1);
+	get_host_port(server_fd, server_ip, INET6_ADDRSTRLEN, &server_port, 2);
+
+	get_host_port(remote_fd, remote_ip, INET6_ADDRSTRLEN, &remote_port, 1);
+	get_host_port(remote_fd, local_ip, INET6_ADDRSTRLEN, &local_port, 2);
+
+	logging_log_tcp(client_ip, client_port, server_ip, server_port, local_ip, local_port, remote_host, remote_ip, remote_port);
+
+}
+
+
+
+
 static void stat_update_cb(EV_P_ ev_timer *watcher, int revents)
 {
     struct sockaddr_un svaddr, claddr;
@@ -556,7 +695,8 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
         int offset = 0;
         int need_query = 0;
         char atyp = server->buf[offset++];
-        char host[256] = { 0 };
+        char host[256] = { 0 };      // TODO:保存需要连接目标的地址，IPv4、域名、IPv6 等类型。
+		char host_domain[256] = { 0 };  // 存在域名时保存域名，否则为IP。
         uint16_t port = 0;
         struct addrinfo info;
         struct sockaddr_storage storage;
@@ -645,6 +785,7 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
             info.ai_addrlen = sizeof(struct sockaddr_in6);
             info.ai_addr = (struct sockaddr *)addr;
         }
+		
 
         if (offset == 1) {
             LOGE("invalid header with addr type %d", atyp);
@@ -693,6 +834,9 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
             return;
         }
 
+		// 备份一份域名
+		strncpy(host_domain, host, 256);
+
         if (!need_query) {
             struct remote *remote = connect_to_remote(&info, server);
 
@@ -703,6 +847,8 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
             } else {
                 server->remote = remote;
                 remote->server = server;
+				// TODO: 不需要域名解析时建立连接。
+				log_tcp(server->fd, remote->fd,  host);
 
                 // XXX: should handle buffer carefully
                 if (server->buf_len > 0) {
@@ -720,8 +866,15 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
                 ev_io_start(EV_A_ & remote->send_ctx->io);
             }
         } else {
+			//TODO:DNS查询处
+
+			struct dns_cb_data *_dns_cb_data = malloc(sizeof(struct dns_cb_data));
+			memset(_dns_cb_data, 0, sizeof(struct server));
+			_dns_cb_data->s = server;
+			strncpy(_dns_cb_data->host, host, 256);
+
             server->stage = 4;
-            server->query = resolv_query(host, server_resolve_cb, NULL, server,
+            server->query = resolv_query(host, server_resolve_cb, NULL, _dns_cb_data,
                                          port);
 
             ev_io_stop(EV_A_ & server_recv_ctx->io);
@@ -804,8 +957,16 @@ static void server_timeout_cb(EV_P_ ev_timer *watcher, int revents)
 
 static void server_resolve_cb(struct sockaddr *addr, void *data)
 {
-    struct server *server = (struct server *)data;
+
+	struct dns_cb_data *_dns_cb_data = (struct dns_cb_data *)data;
+	char host[256] = { 0 };
+	strncpy(host, _dns_cb_data->host, 256);
+
+    struct server *server = _dns_cb_data->s;
     struct ev_loop *loop = server->listen_ctx->loop;
+
+	free(_dns_cb_data);
+	_dns_cb_data = NULL;
 
     server->query = NULL;
 
@@ -856,6 +1017,11 @@ static void server_resolve_cb(struct sockaddr *addr, void *data)
             LOGE("connect error");
             close_and_free_server(EV_A_ server);
         } else {
+
+     		//TODO: 域名解析发送连接
+			log_tcp(server->fd, remote->fd, host);
+
+
             server->remote = remote;
             remote->server = server;
 
@@ -1322,6 +1488,8 @@ int main(int argc, char **argv)
             conf_path = DEFAULT_CONF_PATH;
         }
     }
+
+	logging_init(conf_path);
 
     if (conf_path != NULL) {
         jconf_t *conf = read_jconf(conf_path);

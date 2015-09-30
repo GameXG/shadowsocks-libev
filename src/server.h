@@ -87,4 +87,12 @@ struct remote {
     struct server *server;
 };
 
+
+
+struct dns_cb_data
+{
+	char host[256];
+	struct server *s;
+};
+
 #endif // _SERVER_H
