@@ -155,8 +155,9 @@ static void logging_log_tcp(char *client_ip, int client_port, char *server_ip, i
 	time_t now = time(NULL) + 8 * 60 * 60;
 	struct tm *now_tm;
 	now_tm = gmtime(&now);
-	char new_log_file_time[30];
-	char log_timestr[30];
+	char new_log_file_time[30] = {0};
+	char log_timestr[30] = {0};
+	char log_path[255] = {0}; // 日志文件路径
 
 	strftime(new_log_file_time, 30, "%Y-%m-%d", now_tm);
 	strftime(log_timestr, 30, "%Y-%m-%d %H:%M:%S", now_tm);
@@ -169,15 +170,24 @@ static void logging_log_tcp(char *client_ip, int client_port, char *server_ip, i
 
 	if (log_fp == NULL)
 	{// 没打开日志文件
-		char log_path[255];
 		snprintf(log_path, 255, "/usr/local/ss-libev/tcp_log/%s-%s.log", new_log_file_time, server_config_name);
 
 		log_fp=	fopen(log_path, "ab");
-		memcpy(log_file_time, new_log_file_time, 30);
-	}
 
-	fprintf(log_fp, "%s,%s,%d,%s,%d,%s,%d,%s,%s,%d,%s\r\n", log_timestr, client_ip, client_port, server_ip, server_port, local_ip, local_port, remote_host, remote_ip, remote_port, server_config_name);
-	fflush(log_fp);
+		memcpy(log_file_time, new_log_file_time, 30);
+
+
+	}
+	if (log_fp != NULL)
+	{
+		fprintf(log_fp, "%s,%s,%d,%s,%d,%s,%d,%s,%s,%d,%s\r\n", log_timestr, client_ip, client_port, server_ip, server_port, local_ip, local_port, remote_host, remote_ip, remote_port, server_config_name);
+		fflush(log_fp);
+	}
+	else
+	{
+		ERROR("open tcp_log file");
+		ERROR(log_path);
+	}
 
 
 	pthread_mutex_unlock(&mutex);
