@@ -138,9 +138,10 @@ char server_config_name[256];
 
 static void logging_init(char *server_config_path)
 {
+	char tem[256];
+	strncpy(tem, server_config_path, 256);
 
-	strncpy(server_config_name,basename(server_config_path) , 256);
-
+	strncpy(server_config_name,basename(tem) , 256);
 }
 
 // 记录请求日志
@@ -1485,9 +1486,10 @@ int main(int argc, char **argv)
         }
     }
 
-	logging_init(conf_path);
+	
 
     if (conf_path != NULL) {
+		logging_init(conf_path);
         jconf_t *conf = read_jconf(conf_path);
         if (server_num == 0) {
             server_num = conf->remote_num;
@@ -1534,6 +1536,10 @@ int main(int argc, char **argv)
             nameservers[nameserver_num++] = conf->nameserver;
         }
     }
+	else
+	{
+		logging_init("null");
+	}
 
     if (server_num == 0) {
         server_host[server_num++] = NULL;
