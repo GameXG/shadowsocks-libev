@@ -96,7 +96,8 @@ static void server_timeout_cb(EV_P_ ev_timer *watcher, int revents);
 static struct remote * new_remote(int fd);
 static struct server * new_server(int fd, struct listen_ctx *listener);
 static struct remote *connect_to_remote(struct addrinfo *res,
-                                        struct server *server);
+                                        struct server *server,
+									    const char *host);
 
 static void free_remote(struct remote *remote);
 static void close_and_free_remote(EV_P_ struct remote *remote);
@@ -497,7 +498,7 @@ int create_and_bind(const char *host, const char *port)
 }
 
 static struct remote *connect_to_remote(struct addrinfo *res,
-                                        struct server *server)
+                                        struct server *server,const char *remote_host)
 {
     int sockfd;
 #ifdef SET_INTERFACE
@@ -557,6 +558,8 @@ static struct remote *connect_to_remote(struct addrinfo *res,
     } else
 #endif
     connect(sockfd, res->ai_addr, res->ai_addrlen);
+
+	strncpy(remote->remote_host, remote_host, 256);
 
     return remote;
 }
@@ -696,7 +699,6 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
         int need_query = 0;
         char atyp = server->buf[offset++];
         char host[256] = { 0 };      // TODO:保存需要连接目标的地址，IPv4、域名、IPv6 等类型。
-		char host_domain[256] = { 0 };  // 存在域名时保存域名，否则为IP。
         uint16_t port = 0;
         struct addrinfo info;
         struct sockaddr_storage storage;
@@ -833,12 +835,9 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
             close_and_free_server(EV_A_ server);
             return;
         }
-
-		// 备份一份域名
-		strncpy(host_domain, host, 256);
-
+		
         if (!need_query) {
-            struct remote *remote = connect_to_remote(&info, server);
+            struct remote *remote = connect_to_remote(&info, server,host);
 
             if (remote == NULL) {
                 LOGE("connect error");
@@ -847,8 +846,6 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
             } else {
                 server->remote = remote;
                 remote->server = server;
-				// TODO: 不需要域名解析时建立连接。
-				log_tcp(server->fd, remote->fd,  host);
 
                 // XXX: should handle buffer carefully
                 if (server->buf_len > 0) {
@@ -866,8 +863,6 @@ static void server_recv_cb(EV_P_ ev_io *w, int revents)
                 ev_io_start(EV_A_ & remote->send_ctx->io);
             }
         } else {
-			//TODO:DNS查询处
-
 			struct dns_cb_data *_dns_cb_data = malloc(sizeof(struct dns_cb_data));
 			memset(_dns_cb_data, 0, sizeof(struct server));
 			_dns_cb_data->s = server;
@@ -1011,16 +1006,12 @@ static void server_resolve_cb(struct sockaddr *addr, void *data)
             info.ai_addrlen = sizeof(struct sockaddr_in6);
         }
 
-        struct remote *remote = connect_to_remote(&info, server);
+        struct remote *remote = connect_to_remote(&info, server, host);
 
         if (remote == NULL) {
             LOGE("connect error");
             close_and_free_server(EV_A_ server);
         } else {
-
-     		//TODO: 域名解析发送连接
-			log_tcp(server->fd, remote->fd, host);
-
 
             server->remote = remote;
             remote->server = server;
@@ -1132,6 +1123,11 @@ static void remote_send_cb(EV_P_ ev_io *w, int revents)
         memset(&addr, 0, len);
         int r = getpeername(remote->fd, (struct sockaddr *)&addr, &len);
         if (r == 0) {
+
+			//TODO: 记录连接
+			log_tcp(server->fd, remote->fd, remote->remote_host);
+
+
             if (verbose) {
                 LOGI("remote connected");
             }

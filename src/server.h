@@ -85,6 +85,7 @@ struct remote {
     struct remote_ctx *recv_ctx;
     struct remote_ctx *send_ctx;
     struct server *server;
+	char remote_host[256];
 };
 
 
